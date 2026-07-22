@@ -1,10 +1,12 @@
 """
 Python Cloud Function - Markdown to DOCX Converter
 api/convert/md-to-docx.py → POST /api/convert/md-to-docx
-Accepts a markdown text body and returns a .docx file download.
+Accepts a markdown text body and returns the .docx file as a base64-encoded
+JSON response (so the binary survives any transport re-encoding on the platform).
 """
 import re
 import json
+import base64
 from io import BytesIO
 from http.server import BaseHTTPRequestHandler
 
@@ -224,7 +226,7 @@ def convert_markdown_to_docx(markdown_text):
 # ---------------------------------------------------------------------------
 
 class handler(BaseHTTPRequestHandler):
-    """POST /api/convert/md-to-docx — convert markdown body to .docx download."""
+    """POST /api/convert/md-to-docx — convert markdown body to base64-encoded .docx JSON."""
 
     def do_POST(self):
         try:
@@ -240,14 +242,21 @@ class handler(BaseHTTPRequestHandler):
                 return
 
             docx_bytes = convert_markdown_to_docx(markdown_text)
+            docx_b64 = base64.b64encode(docx_bytes).decode('ascii')
+
+            payload = json.dumps({
+                "ok": True,
+                "filename": "converted.docx",
+                "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "size": len(docx_bytes),
+                "data": docx_b64,
+            })
 
             self.send_response(200)
-            self.send_header('Content-Type',
-                             'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-            self.send_header('Content-Disposition', 'attachment; filename="converted.docx"')
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('X-Powered-By', 'Python Cloud Function')
             self.end_headers()
-            self.wfile.write(docx_bytes)
+            self.wfile.write(payload.encode('utf-8'))
 
         except Exception as exc:  # noqa: BLE001
             self._json_error(500, f"Conversion failed: {exc}")
@@ -261,8 +270,9 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({
             "route": "/api/convert/md-to-docx",
             "method": "POST",
-            "description": "Send markdown text as the raw request body; receive a .docx download.",
+            "description": "Send markdown text as the raw POST body; receive a JSON with base64-encoded .docx in 'data'.",
             "contentType": "text/plain (utf-8)",
+            "responseShape": {"ok": "bool", "filename": "str", "mime": "str", "size": "int", "data": "base64 str"},
         }).encode('utf-8'))
 
     def _json_error(self, status, message):
@@ -270,4 +280,4 @@ class handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json')
         self.send_header('X-Powered-By', 'Python Cloud Function')
         self.end_headers()
-        self.wfile.write(json.dumps({"error": message}).encode('utf-8'))
+        self.wfile.write(json.dumps({"ok": False, "error": message}).encode('utf-8'))

@@ -1,92 +1,144 @@
 "use client"
 
-import { useState } from "react"
-import Link from "next/link"
+import { useState, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Play, ExternalLink, Zap, ChevronDown, ChevronUp, FolderTree, Route, Layers, FileText } from "lucide-react"
+import {
+  Upload,
+  FileText,
+  Download,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  FileUp,
+} from "lucide-react"
 
-interface ApiEndpoint {
-  name: string
-  method: string
-  path: string
-  file: string
-  description: string
-  category: "static" | "dynamic-single" | "dynamic-multi" | "catch-all" | "index"
-}
+const MAX_SIZE = 10 * 1024 * 1024 // 10 MB
 
-const endpoints: ApiEndpoint[] = [
-  {
-    name: "Hello",
-    method: "GET",
-    path: "/hello",
-    file: "cloud-functions/hello.py",
-    description: "Static route — file name maps directly to path",
-    category: "static",
-  },
-  {
-    name: "List Posts",
-    method: "GET",
-    path: "/api/posts",
-    file: "cloud-functions/api/posts/index.py",
-    description: "index.py serves as the default handler for a directory",
-    category: "index",
-  },
-  {
-    name: "User by ID",
-    method: "GET",
-    path: "/api/users/u-42",
-    file: "cloud-functions/api/users/[userId].py",
-    description: "[userId] captures a single dynamic segment",
-    category: "dynamic-single",
-  },
-  {
-    name: "User's Post",
-    method: "GET",
-    path: "/api/users/u-42/posts/p-7",
-    file: "cloud-functions/api/users/[userId]/posts/[postId].py",
-    description: "Nested dynamic params: [userId] and [postId]",
-    category: "dynamic-multi",
-  },
-  {
-    name: "File Access",
-    method: "GET",
-    path: "/api/files/docs/guide/intro.md",
-    file: "cloud-functions/api/files/[[path]].py",
-    description: "[[path]] catches all remaining path segments",
-    category: "catch-all",
-  },
-]
+export default function ConvertPage() {
+  const [fileName, setFileName] = useState<string | null>(null)
+  const [markdownContent, setMarkdownContent] = useState<string>("")
+  const [status, setStatus] = useState<"idle" | "converting" | "done" | "error">("idle")
+  const [errorMsg, setErrorMsg] = useState<string>("")
+  const [docxUrl, setDocxUrl] = useState<string | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const objectUrlRef = useRef<string | null>(null)
 
-const categoryLabels: Record<string, string> = {
-  "static": "Static Routes",
-  "index": "Index Routes",
-  "dynamic-single": "Single Dynamic Param [param]",
-  "dynamic-multi": "Multiple Dynamic Params",
-  "catch-all": "Catch-All Routes [[param]]",
-}
+  const handleFile = useCallback((file: File) => {
+    // Revoke any previous object URL
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+    }
 
-const categoryOrder = ["static", "index", "dynamic-single", "dynamic-multi", "catch-all"]
+    setDocxUrl(null)
+    setStatus("idle")
+    setErrorMsg("")
 
-export default function Home() {
-  const [results, setResults] = useState<Record<string, { data: string; status: number } | null>>({})
-  const [loadingStates, setLoadingStates] = useState<Record<string, boolean>>({})
-  const [expandedCode, setExpandedCode] = useState<string | null>(null)
+    const name = file.name.toLowerCase()
+    if (!name.endsWith(".md") && !name.endsWith(".markdown") && !name.endsWith(".txt")) {
+      setErrorMsg("请选择 Markdown 文件（.md、.markdown、.txt）")
+      setStatus("error")
+      return
+    }
 
-  const handleApiCall = async (endpoint: ApiEndpoint) => {
-    const key = endpoint.path
-    setLoadingStates(prev => ({ ...prev, [key]: true }))
-    const response = await fetch(endpoint.path)
-    const data = await response.json()
-    setResults(prev => ({ ...prev, [key]: { data: JSON.stringify(data, null, 2), status: response.status } }))
-    setLoadingStates(prev => ({ ...prev, [key]: false }))
+    if (file.size > MAX_SIZE) {
+      setErrorMsg("文件过大，最大支持 10 MB。")
+      setStatus("error")
+      return
+    }
+
+    setFileName(file.name)
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      setMarkdownContent(String(e.target?.result ?? ""))
+    }
+    reader.onerror = () => {
+      setErrorMsg("读取文件失败。")
+      setStatus("error")
+    }
+    reader.readAsText(file)
+  }, [])
+
+  const onInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) handleFile(file)
   }
 
-  const grouped = categoryOrder.map(cat => ({
-    category: cat,
-    label: categoryLabels[cat],
-    items: endpoints.filter(e => e.category === cat),
-  }))
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) handleFile(file)
+  }
+
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }
+
+  const onDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+  }
+
+  const handleConvert = async () => {
+    if (!markdownContent.trim()) {
+      setErrorMsg("Markdown 内容为空。")
+      setStatus("error")
+      return
+    }
+
+    setStatus("converting")
+    setErrorMsg("")
+
+    try {
+      const res = await fetch("/api/convert/md-to-docx", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        body: markdownContent,
+      })
+
+      const json = await res.json()
+
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error || `服务器返回 ${res.status}`)
+      }
+
+      // Decode base64 into binary
+      const byteString = atob(json.data)
+      const bytes = new Uint8Array(byteString.length)
+      for (let i = 0; i < byteString.length; i++) {
+        bytes[i] = byteString.charCodeAt(i)
+      }
+      const blob = new Blob([bytes], { type: json.mime })
+      const url = URL.createObjectURL(blob)
+      objectUrlRef.current = url
+      setDocxUrl(url)
+      setStatus("done")
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "转换失败。")
+      setStatus("error")
+    }
+  }
+
+  const downloadName = fileName
+    ? fileName.replace(/\.(md|markdown|txt)$/i, "") + ".docx"
+    : "converted.docx"
+
+  const handleReset = () => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+    }
+    setFileName(null)
+    setMarkdownContent("")
+    setStatus("idle")
+    setErrorMsg("")
+    setDocxUrl(null)
+    if (inputRef.current) inputRef.current.value = ""
+  }
 
   return (
     <div className="min-h-screen bg-black text-white relative overflow-hidden">
@@ -97,214 +149,154 @@ export default function Home() {
       <div className="gradient-orb gradient-orb-primary w-[600px] h-[600px] -top-[200px] -left-[150px] animate-pulse-glow" />
       <div className="gradient-orb gradient-orb-secondary w-[400px] h-[400px] top-[40%] -right-[100px] animate-pulse-glow animation-delay-200" />
 
-      {/* Python Pattern Decoration */}
-      <svg className="python-pattern top-[15%] right-[10%]" viewBox="0 0 110 110" fill="currentColor">
-        <path d="M54.5 0C26.55 0 28.3 12.23 28.3 12.23l.03 12.66h26.67v3.8H17.03S0 26.11 0 54.7c0 28.59 14.85 27.57 14.85 27.57h8.86V69.06s-.48-14.85 14.6-14.85h25.13s14.14.23 14.14-13.66V14.74S79.25 0 54.5 0zM40.17 8.52a4.67 4.67 0 110 9.34 4.67 4.67 0 010-9.34z"/>
-      </svg>
-
-      {/* Header */}
-      <header className="header-border relative z-10">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-end">
-            <a
-              href="https://github.com/TencentEdgeOne/python-handler-template"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="icon-glow text-gray-400 hover:text-[#3776AB] transition-colors p-2"
-              aria-label="GitHub"
-            >
-              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" />
-              </svg>
-            </a>
-          </div>
-        </div>
-      </header>
-
       {/* Main Content */}
       <main className="container mx-auto px-6 py-16 relative z-10">
-        <div className="max-w-4xl mx-auto space-y-10">
-          {/* Hero Section */}
-          <div className="text-center space-y-6 animate-fade-in-up">
-            {/* Title */}
-            <h1 className="text-5xl md:text-6xl font-bold leading-tight">
+        <div className="max-w-3xl mx-auto space-y-8">
+          {/* Hero */}
+          <div className="text-center space-y-4 animate-fade-in-up">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[#3776AB]/15 mb-2">
+              <FileUp className="w-8 h-8 text-[#3776AB]" />
+            </div>
+            <h1 className="text-4xl md:text-5xl font-bold leading-tight">
               <span className="bg-clip-text text-transparent bg-gradient-to-r from-[#3776AB] via-[#5A9FD4] to-white">
-                Python
+                Markdown
               </span>
-              <span className="text-white/70"> + EdgeOne Pages</span>
+              <span className="text-white/70"> → Word</span>
             </h1>
-
-            {/* Subtitle */}
-            <p className="text-lg text-gray-400 max-w-3xl mx-auto leading-relaxed">
-              File-based routing for Python functions. Each <code className="text-[#3776AB] bg-[#3776AB]/10 px-1.5 py-0.5 rounded">.py</code> file
-              in <code className="text-[#3776AB] bg-[#3776AB]/10 px-1.5 py-0.5 rounded">cloud-functions/</code> automatically
-              maps to an HTTP endpoint.
+            <p className="text-lg text-gray-400 max-w-2xl mx-auto leading-relaxed">
+              上传一个 <code className="text-[#3776AB] bg-[#3776AB]/10 px-1.5 py-0.5 rounded">.md</code> 文件，
+              下载格式化的 <code className="text-[#3776AB] bg-[#3776AB]/10 px-1.5 py-0.5 rounded">.docx</code> 文档。
+              由 Python Cloud Function 驱动。
             </p>
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex flex-col sm:flex-row gap-4 justify-center items-center animate-fade-in-up animation-delay-100">
-            <Link href="/convert">
-              <Button size="lg" className="btn-primary px-8 py-6 text-lg rounded-lg cursor-pointer">
-                <FileText className="w-5 h-5 mr-2" />
-                Markdown to Word
-              </Button>
-            </Link>
-            <a href="https://edgeone.ai/pages/new?from=github&template=python-handler-template" target="_blank" rel="noopener noreferrer">
-              <Button variant="outline" size="lg" className="btn-outline px-8 py-6 text-lg rounded-lg cursor-pointer">
-                <Zap className="w-5 h-5 mr-2" />
-                One-Click Deployment
-              </Button>
-            </a>
-            <a href="https://pages.edgeone.ai/document/python" target="_blank" rel="noopener noreferrer">
-              <Button variant="outline" size="lg" className="btn-outline px-8 py-6 text-lg rounded-lg cursor-pointer">
-                <ExternalLink className="w-5 h-5 mr-2" />
-                View Documentation
-              </Button>
-            </a>
-          </div>
-
-          {/* File Structure Card */}
-          <Card className="glass-card border-0 animate-fade-in-up animation-delay-200">
+          {/* Upload Card */}
+          <Card className="glass-card border-0 animate-fade-in-up animation-delay-100">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-medium flex items-center gap-2 text-gray-400">
-                <FolderTree className="w-4 h-4 text-[#3776AB]" />
-                File-Based Routing Structure
+                <Upload className="w-4 h-4 text-[#3776AB]" />
+                上传 Markdown 文件
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              <pre className="file-tree text-sm leading-relaxed overflow-x-auto">
-{`cloud-functions/
-├── hello.py                              → GET /hello
-├── api/
-│   ├── posts/
-│   │   └── index.py                      → GET /api/posts
-│   ├── users/
-│   │   ├── [userId].py                   → GET /api/users/:userId
-│   │   └── [userId]/
-│   │       └── posts/
-│   │           └── [postId].py           → GET /api/users/:userId/posts/:postId
-│   ├── files/
-│   │   └── [[path]].py                   → GET /api/files/*path (catch-all)
-│   └── convert/
-│       └── md-to-docx.py                 → POST /api/convert/md-to-docx`}
-              </pre>
+            <CardContent className="space-y-4">
+              {/* Drop zone */}
+              <div
+                onDrop={onDrop}
+                onDragOver={onDragOver}
+                onDragLeave={onDragLeave}
+                onClick={() => inputRef.current?.click()}
+                className={`drop-zone cursor-pointer rounded-lg border-2 border-dashed p-10 text-center transition-all ${
+                  isDragging
+                    ? "border-[#3776AB] bg-[#3776AB]/10"
+                    : "border-[#3776AB]/25 hover:border-[#3776AB]/50 hover:bg-[#3776AB]/5"
+                }`}
+              >
+                <input
+                  ref={inputRef}
+                  type="file"
+                  accept=".md,.markdown,.txt"
+                  onChange={onInputChange}
+                  className="hidden"
+                />
+                <Upload className="w-10 h-10 mx-auto mb-3 text-[#3776AB]/60" />
+                <p className="text-gray-300 text-sm">
+                  <span className="text-[#3776AB] font-medium">点击选择</span> 或拖拽文件到此处
+                </p>
+                <p className="text-gray-500 text-xs mt-1">
+                  支持 .md、.markdown、.txt — 最大 10 MB
+                </p>
+              </div>
+
+              {/* Selected file info */}
+              {fileName && (
+                <div className="route-card p-4 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-[#3776AB]/15 flex items-center justify-center shrink-0">
+                    <FileText className="w-5 h-5 text-[#3776AB]" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-gray-200 truncate">{fileName}</p>
+                    <p className="text-xs text-gray-500">
+                      {markdownContent.length.toLocaleString()} 字符
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleReset}
+                    className="text-xs text-gray-500 hover:text-red-400 transition-colors cursor-pointer"
+                  >
+                    移除
+                  </button>
+                </div>
+              )}
+
+              {/* Error message */}
+              {status === "error" && errorMsg && (
+                <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <p className="text-sm text-red-300">{errorMsg}</p>
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="flex flex-col sm:flex-row gap-3">
+                <Button
+                  onClick={handleConvert}
+                  disabled={!markdownContent.trim() || status === "converting"}
+                  className="btn-primary rounded-lg cursor-pointer flex-1"
+                >
+                  {status === "converting" ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      转换中…
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="w-4 h-4 mr-2" />
+                      转换为 DOCX
+                    </>
+                  )}
+                </Button>
+
+                {status === "done" && docxUrl && (
+                  <a href={docxUrl} download={downloadName} className="flex-1">
+                    <Button className="btn-primary rounded-lg cursor-pointer w-full">
+                      <Download className="w-4 h-4 mr-2" />
+                      下载 .docx
+                    </Button>
+                  </a>
+                )}
+              </div>
+
+              {/* Success indicator */}
+              {status === "done" && (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-green-500/10 border border-green-500/30">
+                  <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
+                  <p className="text-sm text-green-300">
+                    转换完成！点击下载按钮保存文件。
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
 
-          {/* API Endpoints by Category */}
-          <div className="space-y-6 animate-fade-in-up animation-delay-300">
-            {grouped.map(group => (
-              <div key={group.category} className="space-y-3">
-                <h2 className="category-header">
-                  {group.label}
-                </h2>
-                {group.items.map(endpoint => {
-                  const key = endpoint.path
-                  const result = results[key]
-                  const isLoading = loadingStates[key]
-                  const isExpanded = expandedCode === key
-
-                  return (
-                    <div key={key} className="route-card p-4 space-y-3">
-                      {/* Endpoint header */}
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="method-badge">
-                              {endpoint.method}
-                            </span>
-                            <span className="font-mono text-sm text-gray-200">{endpoint.path}</span>
-                          </div>
-                          <p className="text-xs text-gray-500">{endpoint.description}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => setExpandedCode(isExpanded ? null : key)}
-                            className="text-xs text-gray-500 hover:text-[#3776AB] flex items-center gap-1 cursor-pointer transition-colors"
-                          >
-                            <span className="font-mono">{endpoint.file.split("/").pop()}</span>
-                            {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                          </button>
-                          <Button
-                            size="sm"
-                            onClick={() => handleApiCall(endpoint)}
-                            disabled={isLoading}
-                            className="btn-primary rounded cursor-pointer"
-                          >
-                            {isLoading ? (
-                              <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin mr-1" />
-                            ) : (
-                              <Play className="w-3 h-3 mr-1" />
-                            )}
-                            Call
-                          </Button>
-                        </div>
-                      </div>
-
-                      {/* Expandable source file path */}
-                      {isExpanded && (
-                        <div className="bg-[#0d1117] rounded px-3 py-2 border border-[#3776AB]/10">
-                          <p className="text-xs text-gray-400 font-mono flex items-center gap-2">
-                            <svg className="w-4 h-4 text-[#3776AB]" viewBox="0 0 110 110" fill="currentColor">
-                              <path d="M54.5 0C26.55 0 28.3 12.23 28.3 12.23l.03 12.66h26.67v3.8H17.03S0 26.11 0 54.7c0 28.59 14.85 27.57 14.85 27.57h8.86V69.06s-.48-14.85 14.6-14.85h25.13s14.14.23 14.14-13.66V14.74S79.25 0 54.5 0zM40.17 8.52a4.67 4.67 0 110 9.34 4.67 4.67 0 010-9.34z"/>
-                            </svg>
-                            {endpoint.file}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Result */}
-                      {result && (
-                        <div className="api-response">
-                          <div className="px-3 py-2 border-b border-green-500/20">
-                            <p className="text-xs text-gray-500 font-mono">
-                              Response {result.status > 0 ? `(${result.status})` : ""}
-                            </p>
-                          </div>
-                          <pre className="p-3 text-xs overflow-x-auto">
-                            {result.data}
-                          </pre>
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
+          {/* Supported features */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 animate-fade-in-up animation-delay-200">
+            {[
+              "标题 (H1–H6)",
+              "粗体 / 斜体 / 删除线",
+              "行内代码 & 代码块",
+              "有序 & 无序列表",
+              "引用块",
+              "表格",
+              "超链接",
+              "分隔线",
+            ].map((feat) => (
+              <div
+                key={feat}
+                className="route-card px-3 py-2 text-xs text-gray-400 text-center"
+              >
+                {feat}
               </div>
             ))}
-          </div>
-
-          {/* Features Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mt-12">
-            <div className="feature-card p-5 animate-fade-in-up animation-delay-100">
-              <div className="w-10 h-10 mb-4 rounded-lg bg-[#3776AB]/15 flex items-center justify-center">
-                <FolderTree className="w-5 h-5 text-[#3776AB]" />
-              </div>
-              <h3 className="font-semibold mb-2">File-Based Routing</h3>
-              <p className="text-gray-400 text-sm leading-relaxed">
-                Intuitive routing based on file system structure
-              </p>
-            </div>
-
-            <div className="feature-card p-5 animate-fade-in-up animation-delay-200">
-              <div className="w-10 h-10 mb-4 rounded-lg bg-[#3776AB]/15 flex items-center justify-center">
-                <Route className="w-5 h-5 text-[#FFD43B]" />
-              </div>
-              <h3 className="font-semibold mb-2">Dynamic Routes</h3>
-              <p className="text-gray-400 text-sm leading-relaxed">
-                Support for params, nested params, and catch-all
-              </p>
-            </div>
-
-            <div className="feature-card p-5 animate-fade-in-up animation-delay-300">
-              <div className="w-10 h-10 mb-4 rounded-lg bg-[#3776AB]/15 flex items-center justify-center">
-                <Layers className="w-5 h-5 text-[#FFD43B]" />
-              </div>
-              <h3 className="font-semibold mb-2">Pure Python</h3>
-              <p className="text-gray-400 text-sm leading-relaxed">
-                No framework overhead, standard BaseHTTPRequestHandler
-              </p>
-            </div>
           </div>
         </div>
       </main>
@@ -314,9 +306,9 @@ export default function Home() {
         <div className="container mx-auto px-6 py-8">
           <div className="flex items-center justify-center gap-2 text-gray-500">
             <span>Powered by</span>
-            <a 
-              href="https://pages.edgeone.ai" 
-              target="_blank" 
+            <a
+              href="https://pages.edgeone.ai"
+              target="_blank"
               rel="noopener noreferrer"
               className="text-gray-400 hover:text-[#3776AB] transition-colors flex items-center gap-1"
             >
