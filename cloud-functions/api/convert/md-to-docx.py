@@ -248,6 +248,38 @@ def _strip_theme_fonts(r_fonts):
             del r_fonts.attrib[qn(attr)]
 
 
+def _strip_all_numbering(doc):
+    """Remove ``<w:numPr>`` from non-list paragraph styles (Heading1-6,
+    Subtitle, Title, etc.) and document defaults.
+
+    The python-docx default template ships styles like ``Subtitle`` that
+    carry a ``<w:numPr>`` element.  Some renderers (notably WPS Office)
+    may render a stray bullet/dot if any heading-related style contains
+    a numPr.  We strip numPr from every paragraph style EXCEPT list
+    styles (ListBullet, ListNumber, …) so that real lists keep their
+    bullets/numbers while headings stay clean.
+    """
+    styles_element = doc.styles.element
+    for style in styles_element.findall(qn('w:style')):
+        style_id = style.get(qn('w:styleId')) or ''
+        # Keep numPr on list styles — they NEED it for bullets/numbers.
+        if style_id.startswith('List') or 'List' in style_id:
+            continue
+        p_pr = style.find(qn('w:pPr'))
+        if p_pr is not None:
+            for num_pr in p_pr.findall(qn('w:numPr')):
+                p_pr.remove(num_pr)
+    # Also clean docDefaults/pPrDefault
+    doc_defaults = styles_element.find(qn('w:docDefaults'))
+    if doc_defaults is not None:
+        p_pr_default = doc_defaults.find(qn('w:pPrDefault'))
+        if p_pr_default is not None:
+            p_pr = p_pr_default.find(qn('w:pPr'))
+            if p_pr is not None:
+                for num_pr in p_pr.findall(qn('w:numPr')):
+                    p_pr.remove(num_pr)
+
+
 def _setup_styles(doc, mode=1):
     """Configure document styles with proper East-Asian fonts and heading sizes."""
     # --- Normal (body) style ---
@@ -332,9 +364,8 @@ def _add_heading(doc, level, text, mode=1):
     The default ``Heading1``–``Heading6`` styles in the python-docx
     template can carry an inherited list-numbering reference (or a linked
     character style) that renders as a stray bullet/dot in front of the
-    heading text.  Building the paragraph ourselves — plus an explicit
-    ``numId=0`` (the OOXML standard way to say "no list") — eliminates
-    the dot.
+    heading text.  Building the paragraph ourselves — with NO pStyle and
+    NO numPr — eliminates the dot in all renderers (Word, WPS, etc.).
 
     Typography follows the common Chinese paper/report convention:
     黑体 (SimHei) bold for East-Asian text, with sizes close to
@@ -342,17 +373,6 @@ def _add_heading(doc, level, text, mode=1):
     """
     p = doc.add_paragraph()
     p_pr = p._p.get_or_add_pPr()
-
-    # Explicitly suppress ANY inherited list numbering.  numId=0 means
-    # "no list" and overrides whatever the linked/parent style might set.
-    num_pr = OxmlElement('w:numPr')
-    ilvl = OxmlElement('w:ilvl')
-    ilvl.set(qn('w:val'), '0')
-    num_id = OxmlElement('w:numId')
-    num_id.set(qn('w:val'), '0')
-    num_pr.append(ilvl)
-    num_pr.append(num_id)
-    p_pr.append(num_pr)
 
     # Outline level — keeps the document outline / TOC working even though
     # we don't use the built-in Heading style.
@@ -417,6 +437,10 @@ def convert_markdown_to_docx(markdown_text, mode=1):
     # Configure styles with East-Asian fonts and readable heading sizes
     _setup_styles(doc, mode=mode)
     _setup_page(doc, mode=mode)
+    # Strip ALL numbering definitions from every style — this guarantees
+    # no stray bullet/dot can appear before headings or body text in any
+    # renderer (Word, WPS Office, LibreOffice, Google Docs, …).
+    _strip_all_numbering(doc)
 
     lines = markdown_text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     i = 0
@@ -595,6 +619,7 @@ class handler(BaseHTTPRequestHandler):
             payload = json.dumps({
                 "ok": True,
                 "mode": mode,
+                "ver": "v3-no-dot",
                 "filename": "converted.docx",
                 "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "size": len(docx_bytes),
