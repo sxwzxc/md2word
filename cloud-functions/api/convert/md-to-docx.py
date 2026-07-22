@@ -40,6 +40,22 @@ def _add_shading(paragraph, fill="F2F2F2"):
     p_pr.append(shd)
 
 
+# East Asian font name — ensures Chinese / Japanese / Korean characters
+# render with a real font instead of showing as missing-glyph boxes (叉叉).
+_EA_FONT = '微软雅黑'
+
+
+def _set_run_fonts(run, ascii_font='Calibri', ea_font=_EA_FONT):
+    """Set both ASCII and East-Asian fonts on a run so CJK text renders."""
+    run.font.name = ascii_font
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.find(qn('w:rFonts'))
+    if r_fonts is None:
+        r_fonts = OxmlElement('w:rFonts')
+        r_pr.append(r_fonts)
+    r_fonts.set(qn('w:eastAsia'), ea_font)
+
+
 def _add_formatted_runs(paragraph, text):
     """Parse inline markdown and add styled runs to *paragraph*."""
     if not text:
@@ -52,14 +68,16 @@ def _add_formatted_runs(paragraph, text):
         if part.startswith('**') and part.endswith('**') and len(part) > 4:
             run = paragraph.add_run(part[2:-2])
             run.bold = True
+            _set_run_fonts(run)
         # Strikethrough
         elif part.startswith('~~') and part.endswith('~~') and len(part) > 4:
             run = paragraph.add_run(part[2:-2])
             run.font.strike = True
+            _set_run_fonts(run)
         # Inline code
         elif part.startswith('`') and part.endswith('`') and len(part) > 2:
             run = paragraph.add_run(part[1:-1])
-            run.font.name = 'Courier New'
+            _set_run_fonts(run, ascii_font='Consolas')
             run.font.size = Pt(10.5)
             run.font.color.rgb = RGBColor(0xC7, 0x25, 0x4E)
         # Link [text](url)
@@ -67,16 +85,20 @@ def _add_formatted_runs(paragraph, text):
             m = re.match(r'\[([^\]]+)\]\(([^)]+)\)', part)
             if m:
                 run = paragraph.add_run(m.group(1))
+                _set_run_fonts(run)
                 run.font.color.rgb = RGBColor(0x05, 0x63, 0xC1)
                 run.underline = True
             else:
-                paragraph.add_run(part)
+                run = paragraph.add_run(part)
+                _set_run_fonts(run)
         # Italic (single *)
         elif part.startswith('*') and part.endswith('*') and not part.startswith('**') and len(part) > 2:
             run = paragraph.add_run(part[1:-1])
             run.italic = True
+            _set_run_fonts(run)
         else:
-            paragraph.add_run(part)
+            run = paragraph.add_run(part)
+            _set_run_fonts(run)
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +118,7 @@ def _convert_table(doc, header_row, data_rows):
         _add_formatted_runs(p, cell_text.strip())
         for run in p.runs:
             run.bold = True
+            _set_run_fonts(run)
     # Data
     for row_cells in data_rows:
         cells = table.add_row().cells
@@ -104,14 +127,58 @@ def _convert_table(doc, header_row, data_rows):
             _add_formatted_runs(cells[idx].paragraphs[0], row_cells[idx].strip() if idx < len(row_cells) else '')
 
 
+def _setup_styles(doc):
+    """Configure document styles with proper East-Asian fonts and heading sizes."""
+    from docx.shared import Pt, RGBColor
+
+    # --- Normal (body) style ---
+    normal = doc.styles['Normal']
+    normal.font.name = 'Calibri'
+    normal.font.size = Pt(11)
+    # Set East-Asian font on the style level
+    r_pr = normal.element.get_or_add_rPr()
+    r_fonts = r_pr.find(qn('w:rFonts'))
+    if r_fonts is None:
+        r_fonts = OxmlElement('w:rFonts')
+        r_pr.append(r_fonts)
+    r_fonts.set(qn('w:eastAsia'), _EA_FONT)
+    r_fonts.set(qn('w:ascii'), 'Calibri')
+    r_fonts.set(qn('w:hAnsi'), 'Calibri')
+
+    # --- Heading styles: larger sizes + East-Asian font ---
+    heading_config = {
+        'Heading 1': (Pt(28), RGBColor(0x1F, 0x38, 0x64)),  # 28pt, dark blue
+        'Heading 2': (Pt(22), RGBColor(0x2E, 0x4B, 0x8B)),  # 22pt
+        'Heading 3': (Pt(16), RGBColor(0x37, 0x76, 0xAB)),  # 16pt
+        'Heading 4': (Pt(14), RGBColor(0x44, 0x44, 0x44)),  # 14pt
+        'Heading 5': (Pt(12), RGBColor(0x66, 0x66, 0x66)),  # 12pt
+        'Heading 6': (Pt(11), RGBColor(0x66, 0x66, 0x66)),  # 11pt
+    }
+    for style_name, (size, color) in heading_config.items():
+        try:
+            hs = doc.styles[style_name]
+        except KeyError:
+            continue
+        hs.font.size = size
+        hs.font.color.rgb = color
+        hs.font.bold = True
+        # East-Asian font for headings
+        h_rpr = hs.element.get_or_add_rPr()
+        h_rfonts = h_rpr.find(qn('w:rFonts'))
+        if h_rfonts is None:
+            h_rfonts = OxmlElement('w:rFonts')
+            h_rpr.append(h_rfonts)
+        h_rfonts.set(qn('w:eastAsia'), _EA_FONT)
+        h_rfonts.set(qn('w:ascii'), 'Calibri')
+        h_rfonts.set(qn('w:hAnsi'), 'Calibri')
+
+
 def convert_markdown_to_docx(markdown_text):
     """Convert markdown text to a .docx byte string."""
     doc = Document()
 
-    # Base font
-    style = doc.styles['Normal']
-    style.font.name = 'Calibri'
-    style.font.size = Pt(11)
+    # Configure styles with East-Asian fonts and readable heading sizes
+    _setup_styles(doc)
 
     lines = markdown_text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     i = 0
@@ -132,7 +199,7 @@ def convert_markdown_to_docx(markdown_text):
             p = doc.add_paragraph()
             _add_shading(p)
             run = p.add_run('\n'.join(code_lines))
-            run.font.name = 'Courier New'
+            _set_run_fonts(run, ascii_font='Consolas')
             run.font.size = Pt(9.5)
             continue
 
