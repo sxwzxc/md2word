@@ -325,6 +325,91 @@ def _setup_page(doc, mode=1):
         section.right_margin = Cm(2.54)
 
 
+def _add_heading(doc, level, text, mode=1):
+    """Add a heading using a clean paragraph that bypasses python-docx's
+    default ``Heading`` style.
+
+    The default ``Heading1``–``Heading6`` styles in the python-docx
+    template can carry an inherited list-numbering reference (or a linked
+    character style) that renders as a stray bullet/dot in front of the
+    heading text.  Building the paragraph ourselves — plus an explicit
+    ``numId=0`` (the OOXML standard way to say "no list") — eliminates
+    the dot.
+
+    Typography follows the common Chinese paper/report convention:
+    黑体 (SimHei) bold for East-Asian text, with sizes close to
+    三号/四号/小四 (16/14/12 pt) at levels 1–3.
+    """
+    p = doc.add_paragraph()
+    p_pr = p._p.get_or_add_pPr()
+
+    # Explicitly suppress ANY inherited list numbering.  numId=0 means
+    # "no list" and overrides whatever the linked/parent style might set.
+    num_pr = OxmlElement('w:numPr')
+    ilvl = OxmlElement('w:ilvl')
+    ilvl.set(qn('w:val'), '0')
+    num_id = OxmlElement('w:numId')
+    num_id.set(qn('w:val'), '0')
+    num_pr.append(ilvl)
+    num_pr.append(num_id)
+    p_pr.append(num_pr)
+
+    # Outline level — keeps the document outline / TOC working even though
+    # we don't use the built-in Heading style.
+    outline = OxmlElement('w:outlineLvl')
+    outline.set(qn('w:val'), str(level - 1))
+    p_pr.append(outline)
+
+    # 黑体 bold + paper-style sizes/colors.  Mode 2 (elegant) uses slightly
+    # larger sizes & richer colors; mode 1 (basic) uses plainer colors.
+    if mode == 2:
+        heading_cfg = {
+            1: (Pt(22), RGBColor(0x1A, 0x2A, 0x4F), 18, 8),  # 二号  深蓝
+            2: (Pt(18), RGBColor(0x2B, 0x57, 0x9A), 14, 6),  # 三号  中蓝
+            3: (Pt(15), RGBColor(0x37, 0x76, 0xAB), 10, 4),  # 小三  浅蓝
+            4: (Pt(13), RGBColor(0x44, 0x55, 0x66), 8, 4),   # 四号  深灰蓝
+            5: (Pt(12), RGBColor(0x55, 0x55, 0x55), 6, 3),   # 小四  中灰
+            6: (Pt(11), RGBColor(0x66, 0x66, 0x66), 6, 3),   # 五号  浅灰
+        }
+    else:
+        heading_cfg = {
+            1: (Pt(22), RGBColor(0x1F, 0x38, 0x64), 12, 6),
+            2: (Pt(18), RGBColor(0x2E, 0x4B, 0x8B), 10, 5),
+            3: (Pt(15), RGBColor(0x37, 0x76, 0xAB), 8, 4),
+            4: (Pt(13), RGBColor(0x44, 0x44, 0x44), 6, 3),
+            5: (Pt(12), RGBColor(0x66, 0x66, 0x66), 6, 3),
+            6: (Pt(11), RGBColor(0x66, 0x66, 0x66), 6, 3),
+        }
+    size, color, before, after = heading_cfg.get(level, heading_cfg[6])
+
+    # Paragraph spacing — keep with next so a heading never sits alone
+    # at the bottom of a page.
+    pf = p.paragraph_format
+    pf.space_before = Pt(before)
+    pf.space_after = Pt(after)
+    pf.keep_with_next = True
+    pf.keep_together = True
+
+    # Inline-format the heading text (preserves **bold**, `code`, links),
+    # then override every run with the heading's bold / size / color and
+    # the 黑体 East-Asian font.
+    _add_formatted_runs(p, text, doc=doc, mode=mode)
+    for run in p.runs:
+        run.bold = True
+        run.font.size = size
+        run.font.color.rgb = color
+        r_pr = run._element.get_or_add_rPr()
+        r_fonts = r_pr.find(qn('w:rFonts'))
+        if r_fonts is None:
+            r_fonts = OxmlElement('w:rFonts')
+            r_pr.append(r_fonts)
+        _strip_theme_fonts(r_fonts)
+        # 黑体 (SimHei) — the standard Chinese paper/report heading typeface.
+        r_fonts.set(qn('w:eastAsia'), '黑体')
+
+    return p
+
+
 def convert_markdown_to_docx(markdown_text, mode=1):
     """Convert markdown text to a .docx byte string."""
     doc = Document()
@@ -370,7 +455,7 @@ def convert_markdown_to_docx(markdown_text, mode=1):
             heading_text = m.group(2).strip()
             if first_heading is None and level == 1:
                 first_heading = heading_text
-            _add_formatted_runs(doc.add_heading(level=level), heading_text, doc=doc, mode=mode)
+            _add_heading(doc, level, heading_text, mode=mode)
             i += 1
             continue
 
