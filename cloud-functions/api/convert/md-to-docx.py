@@ -38,18 +38,19 @@ _INLINE_RE = re.compile(
 # render with a real font instead of showing as missing-glyph boxes (叉叉).
 _EA_FONT = '微软雅黑'
 
+# Heading East-Asian font — 黑体 (SimHei) is the standard Chinese
+# paper / report heading typeface.
+_HEADING_EA_FONT = '黑体'
+
 # Soft body text color for elegant mode (instead of harsh pure black).
 _BODY_COLOR = RGBColor(0x33, 0x33, 0x33)
 
 
-def _add_shading(paragraph, fill="F2F2F2"):
-    """Apply background shading to a paragraph (used for code blocks)."""
-    p_pr = paragraph._p.get_or_add_pPr()
-    shd = OxmlElement('w:shd')
-    shd.set(qn('w:val'), 'clear')
-    shd.set(qn('w:color'), 'auto')
-    shd.set(qn('w:fill'), fill)
-    p_pr.append(shd)
+def _strip_theme_fonts(r_fonts):
+    """Remove *Theme font attributes so explicit font names take precedence."""
+    for attr in ('w:asciiTheme', 'w:hAnsiTheme', 'w:eastAsiaTheme', 'w:cstheme'):
+        if r_fonts.get(qn(attr)) is not None:
+            del r_fonts.attrib[qn(attr)]
 
 
 def _set_run_fonts(run, ascii_font='Calibri', ea_font=_EA_FONT):
@@ -64,6 +65,16 @@ def _set_run_fonts(run, ascii_font='Calibri', ea_font=_EA_FONT):
     r_fonts.set(qn('w:eastAsia'), ea_font)
     r_fonts.set(qn('w:ascii'), ascii_font)
     r_fonts.set(qn('w:hAnsi'), ascii_font)
+
+
+def _add_shading(paragraph, fill="F2F2F2"):
+    """Apply background shading to a paragraph (used for code blocks)."""
+    p_pr = paragraph._p.get_or_add_pPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), fill)
+    p_pr.append(shd)
 
 
 def _add_paragraph_border(paragraph, side='left', color='3776AB', sz='24'):
@@ -233,43 +244,49 @@ def _convert_table(doc, header_row, data_rows, mode=1):
             )
 
 
-def _strip_theme_fonts(r_fonts):
-    """Remove *Theme font attributes so explicit font names take precedence.
+def _purge_heading_styles(doc):
+    """Delete ALL heading / title / subtitle / TOC styles from styles.xml.
 
-    The default python-docx template defines heading styles with
-    asciiTheme/eastAsiaTheme/hAnsiTheme that point at theme fonts whose
-    East-Asian slot is empty.  Word/WPS then falls back to a font that
-    cannot render CJK, showing missing-glyph dots/boxes in front of
-    headings.  Stripping these attributes lets our explicit
-    ascii=Calibri / eastAsia=微软雅黑 win.
+    The python-docx default template ships Heading1-9, Title, Subtitle,
+    TOCHeading and their linked *Char character styles.  Even when no
+    paragraph references them, some renderers (notably WPS Office) may
+    still pick up formatting (dots, bullets, numbering) from these style
+    definitions.  Removing them entirely guarantees a clean document.
+
+    List styles (ListBullet, ListNumber, …) are kept so real lists work.
     """
-    for attr in ('w:asciiTheme', 'w:hAnsiTheme', 'w:eastAsiaTheme', 'w:cstheme'):
-        if r_fonts.get(qn(attr)) is not None:
-            del r_fonts.attrib[qn(attr)]
+    styles_element = doc.styles.element
+    to_remove = []
+    for style in styles_element.findall(qn('w:style')):
+        style_id = style.get(qn('w:styleId')) or ''
+        name_el = style.find(qn('w:name'))
+        name_val = name_el.get(qn('w:val')) if name_el is not None else ''
+        id_lower = style_id.lower()
+        name_lower = name_val.lower()
+        # Never touch list styles — they are needed for real lists.
+        if 'list' in id_lower:
+            continue
+        # Match heading / title / subtitle / TOC styles.
+        keywords = ('heading', 'title', 'subtitle', 'toc')
+        if any(kw in id_lower or kw in name_lower for kw in keywords):
+            to_remove.append(style)
+    for style in to_remove:
+        styles_element.remove(style)
 
 
 def _strip_all_numbering(doc):
-    """Remove ``<w:numPr>`` from non-list paragraph styles (Heading1-6,
-    Subtitle, Title, etc.) and document defaults.
-
-    The python-docx default template ships styles like ``Subtitle`` that
-    carry a ``<w:numPr>`` element.  Some renderers (notably WPS Office)
-    may render a stray bullet/dot if any heading-related style contains
-    a numPr.  We strip numPr from every paragraph style EXCEPT list
-    styles (ListBullet, ListNumber, …) so that real lists keep their
-    bullets/numbers while headings stay clean.
+    """Remove ``<w:numPr>`` from ALL non-list paragraph styles and
+    document defaults — eliminates any inherited list/bullet formatting.
     """
     styles_element = doc.styles.element
     for style in styles_element.findall(qn('w:style')):
         style_id = style.get(qn('w:styleId')) or ''
-        # Keep numPr on list styles — they NEED it for bullets/numbers.
-        if style_id.startswith('List') or 'List' in style_id:
+        if 'List' in style_id:
             continue
         p_pr = style.find(qn('w:pPr'))
         if p_pr is not None:
             for num_pr in p_pr.findall(qn('w:numPr')):
                 p_pr.remove(num_pr)
-    # Also clean docDefaults/pPrDefault
     doc_defaults = styles_element.find(qn('w:docDefaults'))
     if doc_defaults is not None:
         p_pr_default = doc_defaults.find(qn('w:pPrDefault'))
@@ -281,19 +298,21 @@ def _strip_all_numbering(doc):
 
 
 def _setup_styles(doc, mode=1):
-    """Configure document styles with proper East-Asian fonts and heading sizes."""
-    # --- Normal (body) style ---
+    """Configure ONLY the Normal (body) style.
+
+    Heading / Title styles are deliberately NOT configured here — they are
+    deleted entirely by ``_purge_heading_styles`` so they can never leak
+    dots or bullets into the document.
+    """
     normal = doc.styles['Normal']
     normal.font.name = 'Calibri'
     normal.font.size = Pt(11)
     if mode == 2:
         normal.font.color.rgb = _BODY_COLOR
-        # 1.5 line spacing + space after for readability
         pf = normal.paragraph_format
         pf.line_spacing = 1.5
         pf.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
         pf.space_after = Pt(6)
-    # Set East-Asian font on the style level
     r_pr = normal.element.get_or_add_rPr()
     r_fonts = r_pr.find(qn('w:rFonts'))
     if r_fonts is None:
@@ -303,47 +322,6 @@ def _setup_styles(doc, mode=1):
     r_fonts.set(qn('w:eastAsia'), _EA_FONT)
     r_fonts.set(qn('w:ascii'), 'Calibri')
     r_fonts.set(qn('w:hAnsi'), 'Calibri')
-
-    # --- Heading styles: larger sizes + East-Asian font ---
-    if mode == 2:
-        heading_config = {
-            'Heading 1': (Pt(26), RGBColor(0x1A, 0x2A, 0x4F), 18, 8),
-            'Heading 2': (Pt(20), RGBColor(0x2B, 0x57, 0x9A), 14, 6),
-            'Heading 3': (Pt(15), RGBColor(0x37, 0x76, 0xAB), 10, 4),
-            'Heading 4': (Pt(13), RGBColor(0x44, 0x55, 0x66), 8, 4),
-            'Heading 5': (Pt(12), RGBColor(0x66, 0x66, 0x66), 6, 3),
-            'Heading 6': (Pt(11), RGBColor(0x66, 0x66, 0x66), 6, 3),
-        }
-    else:
-        heading_config = {
-            'Heading 1': (Pt(28), RGBColor(0x1F, 0x38, 0x64), None, None),
-            'Heading 2': (Pt(22), RGBColor(0x2E, 0x4B, 0x8B), None, None),
-            'Heading 3': (Pt(16), RGBColor(0x37, 0x76, 0xAB), None, None),
-            'Heading 4': (Pt(14), RGBColor(0x44, 0x44, 0x44), None, None),
-            'Heading 5': (Pt(12), RGBColor(0x66, 0x66, 0x66), None, None),
-            'Heading 6': (Pt(11), RGBColor(0x66, 0x66, 0x66), None, None),
-        }
-    for style_name, (size, color, before, after) in heading_config.items():
-        try:
-            hs = doc.styles[style_name]
-        except KeyError:
-            continue
-        hs.font.size = size
-        hs.font.color.rgb = color
-        hs.font.bold = True
-        if mode == 2 and before is not None:
-            hs.paragraph_format.space_before = Pt(before)
-            hs.paragraph_format.space_after = Pt(after)
-        # East-Asian font for headings — strip theme refs first
-        h_rpr = hs.element.get_or_add_rPr()
-        h_rfonts = h_rpr.find(qn('w:rFonts'))
-        if h_rfonts is None:
-            h_rfonts = OxmlElement('w:rFonts')
-            h_rpr.append(h_rfonts)
-        _strip_theme_fonts(h_rfonts)
-        h_rfonts.set(qn('w:eastAsia'), _EA_FONT)
-        h_rfonts.set(qn('w:ascii'), 'Calibri')
-        h_rfonts.set(qn('w:hAnsi'), 'Calibri')
 
 
 def _setup_page(doc, mode=1):
@@ -358,30 +336,19 @@ def _setup_page(doc, mode=1):
 
 
 def _add_heading(doc, level, text, mode=1):
-    """Add a heading using a clean paragraph that bypasses python-docx's
-    default ``Heading`` style.
+    """Add a heading as a PLAIN paragraph with explicit run formatting.
 
-    The default ``Heading1``–``Heading6`` styles in the python-docx
-    template can carry an inherited list-numbering reference (or a linked
-    character style) that renders as a stray bullet/dot in front of the
-    heading text.  Building the paragraph ourselves — with NO pStyle and
-    NO numPr — eliminates the dot in all renderers (Word, WPS, etc.).
+    No heading / title style is used anywhere — not as a paragraph style
+    reference (pStyle), not as a style definition in styles.xml, and not
+    via outlineLvl.  The paragraph is completely clean: only spacing
+    properties in pPr, and bold + size + color + font on every run.
 
-    Typography follows the common Chinese paper/report convention:
-    黑体 (SimHei) bold for East-Asian text, with sizes close to
-    三号/四号/小四 (16/14/12 pt) at levels 1–3.
+    Typography follows the common Chinese paper / report convention:
+    黑体 (SimHei) bold, with sizes close to 二号/三号/小三/四号/小四/五号.
     """
     p = doc.add_paragraph()
-    p_pr = p._p.get_or_add_pPr()
 
-    # Outline level — keeps the document outline / TOC working even though
-    # we don't use the built-in Heading style.
-    outline = OxmlElement('w:outlineLvl')
-    outline.set(qn('w:val'), str(level - 1))
-    p_pr.append(outline)
-
-    # 黑体 bold + paper-style sizes/colors.  Mode 2 (elegant) uses slightly
-    # larger sizes & richer colors; mode 1 (basic) uses plainer colors.
+    # Heading sizes / colors / spacing per level.
     if mode == 2:
         heading_cfg = {
             1: (Pt(22), RGBColor(0x1A, 0x2A, 0x4F), 18, 8),  # 二号  深蓝
@@ -402,30 +369,40 @@ def _add_heading(doc, level, text, mode=1):
         }
     size, color, before, after = heading_cfg.get(level, heading_cfg[6])
 
-    # Paragraph spacing — keep with next so a heading never sits alone
-    # at the bottom of a page.
     pf = p.paragraph_format
     pf.space_before = Pt(before)
     pf.space_after = Pt(after)
     pf.keep_with_next = True
     pf.keep_together = True
 
-    # Inline-format the heading text (preserves **bold**, `code`, links),
-    # then override every run with the heading's bold / size / color and
-    # the 黑体 East-Asian font.
+    # Build the heading text runs (preserves inline **bold**, `code`, links).
     _add_formatted_runs(p, text, doc=doc, mode=mode)
+
+    # Override EVERY run with explicit heading formatting:
+    #   bold (w:b + w:bCs), size (w:sz + w:szCs), color, and 黑体 font.
     for run in p.runs:
         run.bold = True
         run.font.size = size
         run.font.color.rgb = color
         r_pr = run._element.get_or_add_rPr()
+        # Ensure bCs (bold for complex scripts) is set alongside w:b.
+        if r_pr.find(qn('w:bCs')) is None:
+            r_pr.append(OxmlElement('w:bCs'))
+        # szCs (complex-script size) matching w:sz.
+        sz_cs = r_pr.find(qn('w:szCs'))
+        if sz_cs is None:
+            sz_cs = OxmlElement('w:szCs')
+            r_pr.append(sz_cs)
+        sz_cs.set(qn('w:val'), str(int(size.pt * 2)))
+        # Fonts: 黑体 for East-Asian, Calibri for Latin.
         r_fonts = r_pr.find(qn('w:rFonts'))
         if r_fonts is None:
             r_fonts = OxmlElement('w:rFonts')
             r_pr.append(r_fonts)
         _strip_theme_fonts(r_fonts)
-        # 黑体 (SimHei) — the standard Chinese paper/report heading typeface.
-        r_fonts.set(qn('w:eastAsia'), '黑体')
+        r_fonts.set(qn('w:eastAsia'), _HEADING_EA_FONT)
+        r_fonts.set(qn('w:ascii'), 'Calibri')
+        r_fonts.set(qn('w:hAnsi'), 'Calibri')
 
     return p
 
@@ -434,18 +411,20 @@ def convert_markdown_to_docx(markdown_text, mode=1):
     """Convert markdown text to a .docx byte string."""
     doc = Document()
 
-    # Configure styles with East-Asian fonts and readable heading sizes
+    # Configure Normal style only (no heading styles).
     _setup_styles(doc, mode=mode)
     _setup_page(doc, mode=mode)
-    # Strip ALL numbering definitions from every style — this guarantees
-    # no stray bullet/dot can appear before headings or body text in any
-    # renderer (Word, WPS Office, LibreOffice, Google Docs, …).
+    # Delete ALL heading / title / subtitle / TOC style definitions so
+    # they can never leak dots or bullets into the document.
+    _purge_heading_styles(doc)
+    # Strip numPr from every non-list style and from docDefaults.
     _strip_all_numbering(doc)
 
     lines = markdown_text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     i = 0
     n = len(lines)
     first_heading = None
+    list_counter = 0  # for ordered lists
 
     while i < n:
         line = lines[i]
@@ -524,29 +503,31 @@ def convert_markdown_to_docx(markdown_text, mode=1):
             else:
                 run = p.add_run(quote_text)
                 _set_run_fonts(run)
-                try:
-                    p.style = doc.styles['Intense Quote']
-                except KeyError:
-                    p.style = doc.styles['Quote']
             continue
 
-        # ---- Unordered list ----
+        # ---- Unordered list (manual bullet prefix — no ListBullet style) ----
         if re.match(r'^\s*[-*+]\s+', line):
             while i < n and re.match(r'^\s*[-*+]\s+', lines[i]):
                 text = re.sub(r'^\s*[-*+]\s+', '', lines[i])
-                p = doc.add_paragraph(style='List Bullet')
-                _add_formatted_runs(p, text, doc=doc, mode=mode)
+                p = doc.add_paragraph()
+                p.paragraph_format.left_indent = Cm(0.75)
+                p.paragraph_format.first_line_indent = Cm(-0.4)
+                _add_formatted_runs(p, '• ' + text, doc=doc, mode=mode)
                 if mode == 2:
                     _set_paragraph_spacing(p, before=2, after=2, line=1.4)
                 i += 1
             continue
 
-        # ---- Ordered list ----
+        # ---- Ordered list (manual number prefix — no ListNumber style) ----
         if re.match(r'^\s*\d+\.\s+', line):
+            list_counter = 0
             while i < n and re.match(r'^\s*\d+\.\s+', lines[i]):
+                list_counter += 1
                 text = re.sub(r'^\s*\d+\.\s+', '', lines[i])
-                p = doc.add_paragraph(style='List Number')
-                _add_formatted_runs(p, text, doc=doc, mode=mode)
+                p = doc.add_paragraph()
+                p.paragraph_format.left_indent = Cm(0.75)
+                p.paragraph_format.first_line_indent = Cm(-0.4)
+                _add_formatted_runs(p, f'{list_counter}. ' + text, doc=doc, mode=mode)
                 if mode == 2:
                     _set_paragraph_spacing(p, before=2, after=2, line=1.4)
                 i += 1
@@ -575,7 +556,7 @@ def convert_markdown_to_docx(markdown_text, mode=1):
         p = doc.add_paragraph()
         _add_formatted_runs(p, ' '.join(l.strip() for l in para_lines), doc=doc, mode=mode)
 
-    # Set document title from first H1 (metadata)
+    # Set document title from first H1 (metadata only — not a visible element)
     if first_heading:
         try:
             doc.core_properties.title = first_heading
@@ -596,7 +577,6 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            # Parse mode from query string (?mode=1 or ?mode=2)
             parsed = urlparse(self.path)
             qs = parse_qs(parsed.query)
             mode_str = qs.get('mode', ['1'])[0]
@@ -619,7 +599,7 @@ class handler(BaseHTTPRequestHandler):
             payload = json.dumps({
                 "ok": True,
                 "mode": mode,
-                "ver": "v3-no-dot",
+                "ver": "v4-clean",
                 "filename": "converted.docx",
                 "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "size": len(docx_bytes),
