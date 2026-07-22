@@ -60,7 +60,10 @@ def _set_run_fonts(run, ascii_font='Calibri', ea_font=_EA_FONT):
     if r_fonts is None:
         r_fonts = OxmlElement('w:rFonts')
         r_pr.append(r_fonts)
+    _strip_theme_fonts(r_fonts)
     r_fonts.set(qn('w:eastAsia'), ea_font)
+    r_fonts.set(qn('w:ascii'), ascii_font)
+    r_fonts.set(qn('w:hAnsi'), ascii_font)
 
 
 def _add_paragraph_border(paragraph, side='left', color='3776AB', sz='24'):
@@ -230,6 +233,21 @@ def _convert_table(doc, header_row, data_rows, mode=1):
             )
 
 
+def _strip_theme_fonts(r_fonts):
+    """Remove *Theme font attributes so explicit font names take precedence.
+
+    The default python-docx template defines heading styles with
+    asciiTheme/eastAsiaTheme/hAnsiTheme that point at theme fonts whose
+    East-Asian slot is empty.  Word/WPS then falls back to a font that
+    cannot render CJK, showing missing-glyph dots/boxes in front of
+    headings.  Stripping these attributes lets our explicit
+    ascii=Calibri / eastAsia=微软雅黑 win.
+    """
+    for attr in ('w:asciiTheme', 'w:hAnsiTheme', 'w:eastAsiaTheme', 'w:cstheme'):
+        if r_fonts.get(qn(attr)) is not None:
+            del r_fonts.attrib[qn(attr)]
+
+
 def _setup_styles(doc, mode=1):
     """Configure document styles with proper East-Asian fonts and heading sizes."""
     # --- Normal (body) style ---
@@ -249,6 +267,7 @@ def _setup_styles(doc, mode=1):
     if r_fonts is None:
         r_fonts = OxmlElement('w:rFonts')
         r_pr.append(r_fonts)
+    _strip_theme_fonts(r_fonts)
     r_fonts.set(qn('w:eastAsia'), _EA_FONT)
     r_fonts.set(qn('w:ascii'), 'Calibri')
     r_fonts.set(qn('w:hAnsi'), 'Calibri')
@@ -283,12 +302,13 @@ def _setup_styles(doc, mode=1):
         if mode == 2 and before is not None:
             hs.paragraph_format.space_before = Pt(before)
             hs.paragraph_format.space_after = Pt(after)
-        # East-Asian font for headings
+        # East-Asian font for headings — strip theme refs first
         h_rpr = hs.element.get_or_add_rPr()
         h_rfonts = h_rpr.find(qn('w:rFonts'))
         if h_rfonts is None:
             h_rfonts = OxmlElement('w:rFonts')
             h_rpr.append(h_rfonts)
+        _strip_theme_fonts(h_rfonts)
         h_rfonts.set(qn('w:eastAsia'), _EA_FONT)
         h_rfonts.set(qn('w:ascii'), 'Calibri')
         h_rfonts.set(qn('w:hAnsi'), 'Calibri')
