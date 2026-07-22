@@ -1,9 +1,10 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Play, ExternalLink, Zap, ChevronDown, ChevronUp, FolderTree, Route, Layers } from "lucide-react"
+import { Play, ExternalLink, Zap, ChevronDown, ChevronUp, FolderTree, Route, Layers, FileText } from "lucide-react"
 
 interface ApiEndpoint {
   name: string
@@ -143,8 +144,14 @@ export default function Home() {
 
           {/* Action Buttons */}
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center animate-fade-in-up animation-delay-100">
-            <a href="https://edgeone.ai/pages/new?from=github&template=python-handler-template" target="_blank" rel="noopener noreferrer">
+            <Link href="/convert">
               <Button size="lg" className="btn-primary px-8 py-6 text-lg rounded-lg cursor-pointer">
+                <FileText className="w-5 h-5 mr-2" />
+                Markdown to Word
+              </Button>
+            </Link>
+            <a href="https://edgeone.ai/pages/new?from=github&template=python-handler-template" target="_blank" rel="noopener noreferrer">
+              <Button variant="outline" size="lg" className="btn-outline px-8 py-6 text-lg rounded-lg cursor-pointer">
                 <Zap className="w-5 h-5 mr-2" />
                 One-Click Deployment
               </Button>
@@ -177,8 +184,10 @@ export default function Home() {
 │   │   └── [userId]/
 │   │       └── posts/
 │   │           └── [postId].py           → GET /api/users/:userId/posts/:postId
-│   └── files/
-│       └── [[path]].py                   → GET /api/files/*path (catch-all)`}
+│   ├── files/
+│   │   └── [[path]].py                   → GET /api/files/*path (catch-all)
+│   └── convert/
+│       └── md-to-docx.py                 → POST /api/convert/md-to-docx`}
               </pre>
             </CardContent>
           </Card>
