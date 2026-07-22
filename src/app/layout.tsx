@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Python + EdgeOne Pages",
-  description: "Deploy lightweight Python serverless functions on EdgeOne Pages without any web framework dependency. Pure Python, maximum performance.",
+  title: "Markdown → Word 转换器",
+  description: "上传 Markdown 文件，一键转换为格式优雅的 Word (.docx) 文档。",
 };
 
 export default function RootLayout({
@@ -12,9 +12,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en-US">
+    <html lang="zh-CN">
       <head>
-        <link rel="icon" href="/python-favicon.svg" />
+        <link rel="icon" href="/favicon.svg" />
       </head>
       <body
         className="antialiased"
