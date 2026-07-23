@@ -252,15 +252,19 @@ def _convert_table(doc, header_row, data_rows, mode=1):
 
 
 def _purge_heading_styles(doc):
-    """Delete ALL heading / title / subtitle / TOC styles from styles.xml.
+    """Delete ALL heading / title / subtitle / TOC / list styles from
+    styles.xml.
 
     The python-docx default template ships Heading1-9, Title, Subtitle,
-    TOCHeading and their linked *Char character styles.  Even when no
-    paragraph references them, some renderers (notably WPS Office) may
-    still pick up formatting (dots, bullets, numbering) from these style
-    definitions.  Removing them entirely guarantees a clean document.
+    TOCHeading, ListBullet1-3, ListNumber1-3 and their linked *Char
+    character styles.  Even when no paragraph references them, WPS Office
+    picks up the ``<w:numPr>`` inside the List styles and renders broken
+    bullet glyphs (empty ``<w:lvlText>`` + Symbol font) as SQUARE BOXES
+    in front of text.  Removing every one of these style definitions
+    guarantees a completely clean document with no list leakage.
 
-    List styles (ListBullet, ListNumber, …) are kept so real lists work.
+    We use manual text prefixes (``•`` / ``1.``) for lists, so no list
+    style or numbering definition is needed at all.
     """
     styles_element = doc.styles.element
     to_remove = []
@@ -270,11 +274,7 @@ def _purge_heading_styles(doc):
         name_val = name_el.get(qn('w:val')) if name_el is not None else ''
         id_lower = style_id.lower()
         name_lower = name_val.lower()
-        # Never touch list styles — they are needed for real lists.
-        if 'list' in id_lower:
-            continue
-        # Match heading / title / subtitle / TOC styles.
-        keywords = ('heading', 'title', 'subtitle', 'toc')
+        keywords = ('heading', 'title', 'subtitle', 'toc', 'list')
         if any(kw in id_lower or kw in name_lower for kw in keywords):
             to_remove.append(style)
     for style in to_remove:
@@ -282,14 +282,11 @@ def _purge_heading_styles(doc):
 
 
 def _strip_all_numbering(doc):
-    """Remove ``<w:numPr>`` from ALL non-list paragraph styles and
-    document defaults — eliminates any inherited list/bullet formatting.
+    """Remove ``<w:numPr>`` from EVERY style and document defaults —
+    eliminates any inherited list/bullet formatting anywhere.
     """
     styles_element = doc.styles.element
     for style in styles_element.findall(qn('w:style')):
-        style_id = style.get(qn('w:styleId')) or ''
-        if 'List' in style_id:
-            continue
         p_pr = style.find(qn('w:pPr'))
         if p_pr is not None:
             for num_pr in p_pr.findall(qn('w:numPr')):
@@ -395,6 +392,46 @@ def _patch_theme_fonts(doc):
                 theme_part.blob = new_blob
             except Exception:
                 pass
+
+
+def _purge_numbering_part(doc):
+    """Empty word/numbering.xml so NO bullet / number definitions exist.
+
+    The default template's numbering.xml contains ``<w:abstractNum>``
+    entries whose bullet levels use an EMPTY ``<w:lvlText w:val=""/>``
+    with ``<w:rFonts w:ascii="Symbol">``.  WPS Office renders these
+    broken bullet definitions as SQUARE BOXES (方框点) in front of text.
+    Even after deleting the List styles that reference them, WPS can
+    still pick up the numbering definitions directly.  Removing every
+    ``<w:abstractNum>`` and ``<w:num>`` child from the numbering
+    element eliminates every bullet / number definition so there is
+    nothing left to render.
+
+    We use manual text prefixes (``•`` / ``1.``) for lists, so no
+    numbering definition is needed at all.
+
+    NOTE: NumberingPart is an XmlPart whose ``blob`` property
+    serialises from ``_element`` — setting ``_blob`` has no effect.
+    We must mutate the lxml element tree directly.
+    """
+    numbering_reltype = (
+        'http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering'
+    )
+    numbering_part = None
+    for rel in doc.part.rels.values():
+        if rel.reltype == numbering_reltype:
+            numbering_part = rel.target_part
+            break
+    if numbering_part is None:
+        return
+    try:
+        numbering_el = numbering_part.element
+    except Exception:
+        return
+    # Remove ALL children (abstractNum, num, etc.) so the part becomes
+    # an empty <w:numbering/> wrapper.
+    for child in list(numbering_el):
+        numbering_el.remove(child)
 
 
 def _setup_styles(doc, mode=1):
@@ -514,11 +551,13 @@ def convert_markdown_to_docx(markdown_text, mode=1):
     # Configure Normal style only (no heading styles).
     _setup_styles(doc, mode=mode)
     _setup_page(doc, mode=mode)
-    # Delete ALL heading / title / subtitle / TOC style definitions so
-    # they can never leak dots or bullets into the document.
+    # Delete ALL heading / title / subtitle / TOC / list style definitions
+    # so they can never leak dots or bullets into the document.
     _purge_heading_styles(doc)
-    # Strip numPr from every non-list style and from docDefaults.
+    # Strip numPr from EVERY style and from docDefaults.
     _strip_all_numbering(doc)
+    # Empty numbering.xml so NO bullet / number definitions exist at all.
+    _purge_numbering_part(doc)
     # Strip ALL *Theme font references from styles + docDefaults and fill
     # in explicit eastAsia/ascii/hAnsi fonts.  This eliminates the empty
     # eastAsiaTheme that produces missing-glyph square dots.
@@ -707,7 +746,7 @@ class handler(BaseHTTPRequestHandler):
             payload = json.dumps({
                 "ok": True,
                 "mode": mode,
-                "ver": "v5-fontfix",
+                "ver": "v6-nolist",
                 "filename": "converted.docx",
                 "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "size": len(docx_bytes),
