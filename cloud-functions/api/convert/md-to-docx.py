@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 from docx import Document
-from docx.shared import Pt, RGBColor, Cm, Emu
+from docx.shared import Pt, RGBColor, Cm
 from docx.enum.text import WD_LINE_SPACING
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement

@@ -3,7 +3,10 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Markdown → Word 转换器",
-  description: "上传 Markdown 文件，一键转换为格式优雅的 Word (.docx) 文档。",
+  description: "在线将 Markdown 文档转换为格式精美的 Word (.docx) 文件，支持标题、加粗、代码、列表、表格等。",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({
@@ -13,14 +16,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <head>
-        <link rel="icon" href="/favicon.svg" />
-      </head>
-      <body
-        className="antialiased"
-      >
-        {children}
-      </body>
+      <body className="antialiased">{children}</body>
     </html>
   );
 }
