@@ -480,6 +480,12 @@ def _add_heading(doc, level, text, mode=1):
     via outlineLvl.  The paragraph is completely clean: only spacing
     properties in pPr, and bold + size + color + font on every run.
 
+    NOTE: ``keep_with_next`` and ``keep_together`` are deliberately NOT
+    set.  In WPS Office, ``<w:keepNext/>`` is displayed as a SMALL SQUARE
+    mark (▪) at the left margin of the paragraph when formatting marks
+    are visible, and "Clear Format" removes it.  This was the root cause
+    of the persistent "方形点" (square dot) before headings.
+
     Typography follows the common Chinese paper / report convention:
     黑体 (SimHei) bold, with sizes close to 二号/三号/小三/四号/小四/五号.
     """
@@ -509,8 +515,6 @@ def _add_heading(doc, level, text, mode=1):
     pf = p.paragraph_format
     pf.space_before = Pt(before)
     pf.space_after = Pt(after)
-    pf.keep_with_next = True
-    pf.keep_together = True
 
     # Build the heading text runs (preserves inline **bold**, `code`, links).
     _add_formatted_runs(p, text, doc=doc, mode=mode)
@@ -746,7 +750,7 @@ class handler(BaseHTTPRequestHandler):
             payload = json.dumps({
                 "ok": True,
                 "mode": mode,
-                "ver": "v6-nolist",
+                "ver": "v7-nokeep",
                 "filename": "converted.docx",
                 "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "size": len(docx_bytes),
