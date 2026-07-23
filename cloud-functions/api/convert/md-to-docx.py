@@ -47,7 +47,14 @@ _BODY_COLOR = RGBColor(0x33, 0x33, 0x33)
 
 
 def _strip_theme_fonts(r_fonts):
-    """Remove *Theme font attributes so explicit font names take precedence."""
+    """Remove *Theme font attributes so explicit font names take precedence.
+
+    The python-docx default template defines styles and docDefaults with
+    asciiTheme/eastAsiaTheme/hAnsiTheme that point at theme fonts whose
+    East-Asian slot is EMPTY.  Word/WPS then cannot find a CJK font and
+    renders missing-glyph squares (方框点) in front of text.  Stripping
+    these attributes lets our explicit ascii=Calibri / eastAsia=微软雅黑 win.
+    """
     for attr in ('w:asciiTheme', 'w:hAnsiTheme', 'w:eastAsiaTheme', 'w:cstheme'):
         if r_fonts.get(qn(attr)) is not None:
             del r_fonts.attrib[qn(attr)]
@@ -297,6 +304,99 @@ def _strip_all_numbering(doc):
                     p_pr.remove(num_pr)
 
 
+def _sanitize_all_fonts(doc):
+    """Strip *Theme font references from EVERY style and docDefaults, and
+    set explicit eastAsia/ascii/hAnsi fonts.
+
+    This is the critical fix for the "方框点" (square dot) issue: the
+    default theme1.xml has an EMPTY East-Asian font slot
+    (``<a:ea typeface=""/>``), so any style referencing
+    ``eastAsiaTheme="minorEastAsia"`` ends up with no CJK font and
+    renders missing-glyph squares.  By removing every *Theme attribute
+    and writing explicit font names, we guarantee CJK text always renders.
+    """
+    styles_element = doc.styles.element
+
+    def _fix_rfonts(r_fonts):
+        if r_fonts is None:
+            return
+        _strip_theme_fonts(r_fonts)
+        # Ensure explicit east-Asian font is set if not already present.
+        if r_fonts.get(qn('w:eastAsia')) is None:
+            r_fonts.set(qn('w:eastAsia'), _EA_FONT)
+        if r_fonts.get(qn('w:ascii')) is None:
+            r_fonts.set(qn('w:ascii'), 'Calibri')
+        if r_fonts.get(qn('w:hAnsi')) is None:
+            r_fonts.set(qn('w:hAnsi'), 'Calibri')
+
+    # 1) docDefaults / rPrDefault
+    doc_defaults = styles_element.find(qn('w:docDefaults'))
+    if doc_defaults is not None:
+        r_pr_default = doc_defaults.find(qn('w:rPrDefault'))
+        if r_pr_default is not None:
+            r_pr = r_pr_default.find(qn('w:rPr'))
+            if r_pr is not None:
+                _fix_rfonts(r_pr.find(qn('w:rFonts')))
+
+    # 2) Every rFonts element ANYWHERE in styles.xml — this catches rFonts
+    #    inside <w:style><w:rPr>, inside <w:tblStylePr><w:rPr>, inside
+    #    linked <w:link><w:rPr>, etc.  Using iter() (recursive) not find().
+    for r_fonts in styles_element.iter(qn('w:rFonts')):
+        _fix_rfonts(r_fonts)
+
+
+def _patch_theme_fonts(doc):
+    """Patch word/theme/theme1.xml so its empty East-Asian font slots
+    point to a real CJK font.  This is a belt-and-suspenders fix: even if
+    some renderer ignores our style-level font overrides and falls back
+    to the theme, it will now find a valid CJK font instead of an empty
+    string (which produces the square missing-glyph dots).
+    """
+    # The theme part is related from the DOCUMENT part (not the package).
+    theme_reltype = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme'
+    theme_part = None
+    for rel in doc.part.rels.values():
+        if rel.reltype == theme_reltype:
+            theme_part = rel.target_part
+            break
+    if theme_part is None:
+        return
+    try:
+        blob = theme_part.blob
+    except Exception:
+        return
+    if not blob:
+        return
+    try:
+        xml = blob.decode('utf-8')
+    except Exception:
+        return
+    # Replace empty <a:ea typeface=""/> with 微软雅黑.
+    new_xml = re.sub(
+        r'(<a:ea\s+typeface=")\s*(")',
+        rf'\1{_EA_FONT}\2',
+        xml,
+    )
+    # Also fill empty <a:cs typeface=""/> with a safe default.
+    new_xml = re.sub(
+        r'(<a:cs\s+typeface=")\s*(")',
+        r'\1Calibri\2',
+        new_xml,
+    )
+    if new_xml != xml:
+        new_blob = new_xml.encode('utf-8')
+        # python-docx Part stores the binary payload in _blob; the blob
+        # property is a read-only accessor in some versions.  Set _blob
+        # directly so doc.save() picks up the patched content.
+        try:
+            theme_part._blob = new_blob
+        except Exception:
+            try:
+                theme_part.blob = new_blob
+            except Exception:
+                pass
+
+
 def _setup_styles(doc, mode=1):
     """Configure ONLY the Normal (body) style.
 
@@ -419,6 +519,14 @@ def convert_markdown_to_docx(markdown_text, mode=1):
     _purge_heading_styles(doc)
     # Strip numPr from every non-list style and from docDefaults.
     _strip_all_numbering(doc)
+    # Strip ALL *Theme font references from styles + docDefaults and fill
+    # in explicit eastAsia/ascii/hAnsi fonts.  This eliminates the empty
+    # eastAsiaTheme that produces missing-glyph square dots.
+    _sanitize_all_fonts(doc)
+    # Patch theme1.xml so its empty <a:ea typeface=""/> slots point to a
+    # real CJK font — belt-and-suspenders against renderers that ignore
+    # style-level overrides and fall straight back to the theme.
+    _patch_theme_fonts(doc)
 
     lines = markdown_text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     i = 0
@@ -599,7 +707,7 @@ class handler(BaseHTTPRequestHandler):
             payload = json.dumps({
                 "ok": True,
                 "mode": mode,
-                "ver": "v4-clean",
+                "ver": "v5-fontfix",
                 "filename": "converted.docx",
                 "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "size": len(docx_bytes),
